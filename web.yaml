@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webfront
+  namespace: fivetran
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webfront
+  template:
+    metadata:
+      labels:
+        app: webfront
+    spec:
+      containers:
+      - name: webfront
+        image: node:18-alpine
+        ports:
+        - containerPort: 3000
+        env:
+        - name: SQL_HOST
+          value: "mssql"
+        - name: SQL_PORT
+          value: "1433"
+        - name: SQL_USER
+          value: "sa"
+        - name: SQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: password
+        - name: SQL_DATABASE
+          value: "demo"
+        volumeMounts:
+        - name: webfront-config
+          mountPath: /app/src
+        - name: node-modules
+          mountPath: /app/node_modules
+        - name: app-dir
+          mountPath: /app
+        workingDir: /app
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          cp /app/src/server.js /app/
+          
+          echo "Installing dependencies..."
+          npm init -y
+          npm install express@4.18.2 body-parser@1.20.2 mssql@7.3.5
+          
+          echo "Starting server..."
+          node server.js
+      volumes:
+      - name: webfront-config
+        configMap:
+          name: webfront-files
+      - name: node-modules
+        emptyDir: {}
+      - name: app-dir
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webfront
+  namespace: fivetran
+spec:
+  selector:
+    app: webfront
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30000
+  type: NodePort
