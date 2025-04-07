@@ -1,0 +1,265 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webfront-files
+  namespace: fivetran
+data:
+  server.js: |
+    const express = require('express');
+    const bodyParser = require('body-parser');
+    const sql = require('mssql');
+    
+    const app = express();
+    const port = 3000;
+
+    // Middleware
+    app.use(bodyParser.json());
+    
+    // Simple HTML form
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Fivetran Data Input</title>
+        <style>
+            body { font-family: Arial; max-width: 600px; margin: 0 auto; padding: 20px; }
+            .form-group { margin-bottom: 15px; }
+            label { display: block; font-weight: bold; }
+            input, select, textarea { width: 100%; padding: 8px; }
+            button { background: #4CAF50; color: white; padding: 10px; border: none; cursor: pointer; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+        </style>
+    </head>
+    <body>
+        <h1>Fivetran Data Input</h1>
+        <form id="dataForm">
+            <div class="form-group">
+                <label>Account Name:</label>
+                <input type="text" name="accountName" required>
+            </div>
+            <div class="form-group">
+                <label>Product:</label>
+                <select name="product">
+                    <option value="Basic">Basic</option>
+                    <option value="Standard">Standard</option>
+                    <option value="Premium">Premium</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Cost ($):</label>
+                <input type="number" name="cost" min="0" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label>Email:</label>
+                <input type="email" name="email" required>
+            </div>
+            <div class="form-group">
+                <label>Address:</label>
+                <textarea name="address" rows="3"></textarea>
+            </div>
+            <button type="submit">Submit Data</button>
+        </form>
+        <div id="message" style="margin-top: 20px;"></div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Saved Accounts</h2>
+            <button id="loadButton">Load Accounts</button>
+            <div id="accountsList"></div>
+        </div>
+
+        <script>
+            document.getElementById('dataForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                const formData = new FormData(this);
+                const data = {};
+                formData.forEach((value, key) => data[key] = value);
+                
+                fetch('/api/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                .then(response => response.json())
+                .then(result => {
+                    document.getElementById('message').innerHTML = 
+                        '<div style="padding: 10px; background: #d4edda; color: #155724; border-radius: 4px;">' + 
+                        'Data submitted successfully!</div>';
+                    document.getElementById('dataForm').reset();
+                    
+                    // Reload accounts after submission
+                    loadAccounts();
+                })
+                .catch(error => {
+                    document.getElementById('message').innerHTML = 
+                        '<div style="padding: 10px; background: #f8d7da; color: #721c24; border-radius: 4px;">' +
+                        'Error: ' + error.message + '</div>';
+                });
+            });
+            
+            // Load accounts list
+            function loadAccounts() {
+                fetch('/api/accounts')
+                    .then(response => response.json())
+                    .then(accounts => {
+                        const accountsDiv = document.getElementById('accountsList');
+                        
+                        if (accounts.length === 0) {
+                            accountsDiv.innerHTML = '<p>No accounts found.</p>';
+                            return;
+                        }
+                        
+                        let table = '<table>';
+                        table += '<tr><th>ID</th><th>Account Name</th><th>Product</th><th>Cost</th><th>Email</th></tr>';
+                        
+                        accounts.forEach(account => {
+                            table += '<tr>' +
+                                '<td>' + account.id + '</td>' +
+                                '<td>' + account.accountName + '</td>' +
+                                '<td>' + account.product + '</td>' +
+                                '<td>$' + parseFloat(account.cost).toFixed(2) + '</td>' +
+                                '<td>' + account.email + '</td>' +
+                                '</tr>';
+                        });
+                        
+                        table += '</table>';
+                        accountsDiv.innerHTML = table;
+                    })
+                    .catch(error => {
+                        document.getElementById('accountsList').innerHTML = 
+                            '<div style="padding: 10px; background: #f8d7da; color: #721c24; border-radius: 4px;">' +
+                            'Error loading accounts: ' + error.message + '</div>';
+                    });
+            }
+            
+            // Attach load button event
+            document.getElementById('loadButton').addEventListener('click', loadAccounts);
+        </script>
+    </body>
+    </html>
+    `;
+    
+    app.get('/', (req, res) => {
+      res.send(html);
+    });
+    
+    // SQL Server Configuration
+    const sqlConfig = {
+      user: process.env.SQL_USER || 'sa',
+      password: process.env.SQL_PASSWORD || 'test123',
+      server: process.env.SQL_HOST || 'mssql',
+      port: parseInt(process.env.SQL_PORT || '1433'),
+      database: process.env.SQL_DATABASE || 'demo',
+      options: {
+        encrypt: false, // For local dev/test
+        trustServerCertificate: true,
+        enableArithAbort: true
+      }
+    };
+    
+    // Initialize DB connection
+    let pool;
+    
+    async function connectToDb() {
+      try {
+        pool = await sql.connect(sqlConfig);
+        console.log('Connected to SQL Server database');
+        
+        // Create database if it doesn't exist
+        await pool.request().query(`
+          IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'demo')
+          BEGIN
+            CREATE DATABASE demo;
+          END
+        `);
+        
+        // Switch to the demo database
+        await pool.request().query('USE demo');
+        
+        // Create accounts table
+        await pool.request().query(`
+          IF NOT EXISTS (SELECT * FROM sysobjects WHERE name = 'accounts' AND xtype = 'U')
+          BEGIN
+            CREATE TABLE accounts (
+              id INT IDENTITY(1,1) PRIMARY KEY,
+              accountName NVARCHAR(100) NOT NULL,
+              product NVARCHAR(100) NOT NULL,
+              cost DECIMAL(10,2),
+              email NVARCHAR(100),
+              address NVARCHAR(MAX),
+              created_at DATETIME DEFAULT GETDATE()
+            )
+          END
+        `);
+        
+        console.log('Database table verified/created');
+        return true;
+      } catch (err) {
+        console.error('Database connection error:', err);
+        console.log('Will retry in 5 seconds...');
+        setTimeout(connectToDb, 5000);
+        return false;
+      }
+    }
+    
+    // Get accounts endpoint
+    app.get('/api/accounts', async (req, res) => {
+      if (!pool) {
+        return res.status(503).json([]);
+      }
+      
+      try {
+        const result = await pool.request().query('SELECT * FROM accounts ORDER BY id DESC');
+        res.json(result.recordset);
+      } catch (err) {
+        console.error('Error fetching accounts:', err);
+        res.status(500).json([]);
+      }
+    });
+    
+    // Submit data endpoint
+    app.post('/api/submit', async (req, res) => {
+      if (!pool) {
+        return res.status(503).json({
+          success: false,
+          message: 'Database connection not available'
+        });
+      }
+      
+      try {
+        const data = req.body;
+        console.log('Received data:', data);
+        
+        const result = await pool.request()
+          .input('accountName', sql.NVarChar, data.accountName)
+          .input('product', sql.NVarChar, data.product || 'Basic')
+          .input('cost', sql.Decimal(10, 2), data.cost || 0)
+          .input('email', sql.NVarChar, data.email || '')
+          .input('address', sql.NVarChar, data.address || '')
+          .query(`
+            INSERT INTO accounts (accountName, product, cost, email, address)
+            VALUES (@accountName, @product, @cost, @email, @address);
+            SELECT SCOPE_IDENTITY() AS id;
+          `);
+        
+        res.json({
+          success: true,
+          message: 'Data saved successfully',
+          id: result.recordset[0].id
+        });
+      } catch (err) {
+        console.error('Error saving data:', err);
+        res.status(500).json({
+          success: false,
+          message: 'Error saving data',
+          error: err.message
+        });
+      }
+    });
+    
+    // Start server
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`Server running on port ${port}`);
+      connectToDb();
+    });
